@@ -1,0 +1,3 @@
+*.o
+simfs
+test_fs.img
