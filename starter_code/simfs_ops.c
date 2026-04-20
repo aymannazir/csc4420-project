@@ -1,16 +1,7 @@
-/* simfs_ops.c
- * Implements the four file system operations:
- * createfile, deletefile, readfile, writefile
- */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "simfs.h"
-
-/* ═══════════════════════════════════════════════════════════
-   HELPER FUNCTIONS
-   ═══════════════════════════════════════════════════════════ */
 
 FILE *
 openfs(char *filename, char *mode)
@@ -32,8 +23,7 @@ closefs(FILE *fp)
     }
 }
 
-/* Load fentries and fnodes from the fs file into our arrays.
- * We do this at the start of every operation so we know the current state. */
+/* reads fentries and fnodes from the fs file into our arrays */
 void
 load_metadata(char *fsfile, fentry *files, fnode *fnodes)
 {
@@ -49,8 +39,8 @@ load_metadata(char *fsfile, fentry *files, fnode *fnodes)
     closefs(fp);
 }
 
-/* Write fentries and fnodes back to the fs file.
- * "r+" opens for read+write WITHOUT truncating the file. */
+/* writes fentries and fnodes back to the fs file
+ * "r+" so we don't truncate/wipe the whole file */
 void
 save_metadata(char *fsfile, fentry *files, fnode *fnodes)
 {
@@ -66,8 +56,8 @@ save_metadata(char *fsfile, fentry *files, fnode *fnodes)
     closefs(fp);
 }
 
-/* Find a file by name. Returns fentry index or -1 if not found.
- * A free slot has name[0] == '\0', so we skip those. */
+/* searches fentries by name, returns index or -1 if not found
+ * skips empty slots (name[0] == '\0') */
 int
 find_file(fentry *files, char *name)
 {
@@ -78,8 +68,7 @@ find_file(fentry *files, char *name)
     return -1;
 }
 
-/* Count available (free) fnode slots.
- * A fnode is free if blockindex < 0. */
+/* counts how many fnodes are free (blockindex < 0 means free) */
 int
 count_free_fnodes(fnode *fnodes)
 {
@@ -91,7 +80,7 @@ count_free_fnodes(fnode *fnodes)
     return count;
 }
 
-/* Find index of the first free fnode, or -1 if none available. */
+/* returns index of first free fnode, or -1 if none */
 int
 find_free_fnode(fnode *fnodes)
 {
@@ -102,7 +91,7 @@ find_free_fnode(fnode *fnodes)
     return -1;
 }
 
-/* Count how many blocks a file has by walking its fnode chain. */
+/* walks the fnode chain and counts how many blocks a file uses */
 int
 count_file_blocks(fnode *fnodes, int firstblock)
 {
@@ -115,9 +104,7 @@ count_file_blocks(fnode *fnodes, int firstblock)
     return count;
 }
 
-/* ═══════════════════════════════════════════════════════════
-   CREATEFILE
-   ═══════════════════════════════════════════════════════════ */
+/* createfile: creates an empty file entry in the filesystem */
 void
 createfile(char *fsfile, char *name)
 {
@@ -135,7 +122,7 @@ createfile(char *fsfile, char *name)
         exit(1);
     }
 
-    /* Find a free fentry slot — empty name[0] means free */
+    /* find a free slot — name[0] == '\0' means slot is empty */
     int slot = -1;
     for (int i = 0; i < MAXFILES; i++) {
         if (files[i].name[0] == '\0') { slot = i; break; }
@@ -145,16 +132,14 @@ createfile(char *fsfile, char *name)
         exit(1);
     }
 
-    strncpy(files[slot].name, name, 12);  /* 12 = max 11 chars + null terminator */
+    strncpy(files[slot].name, name, 12);
     files[slot].size       = 0;
-    files[slot].firstblock = -1;          /* no blocks allocated yet */
+    files[slot].firstblock = -1;  /* no blocks yet */
 
     save_metadata(fsfile, files, fnodes);
 }
 
-/* ═══════════════════════════════════════════════════════════
-   DELETEFILE
-   ═══════════════════════════════════════════════════════════ */
+/* deletefile: removes file, zeros its data blocks, frees its fnodes */
 void
 deletefile(char *fsfile, char *name)
 {
@@ -171,12 +156,11 @@ deletefile(char *fsfile, char *name)
     FILE *fp = openfs(fsfile, "r+");
     char zerobuf[BLOCKSIZE] = {0};
 
-    /* Walk the fnode chain: zero each block, then mark the fnode as free */
     int cur = files[slot].firstblock;
     while (cur != -1) {
-        int next = fnodes[cur].nextblock;  /* save next BEFORE we modify this fnode */
+        int next = fnodes[cur].nextblock;  /* save next before we overwrite this fnode */
 
-        /* Zero this data block. fnode[i]'s block is at byte offset i*BLOCKSIZE */
+        /* fnode[i]'s data lives at byte offset i*BLOCKSIZE in the file */
         if (fseek(fp, (long)cur * BLOCKSIZE, SEEK_SET) != 0) {
             fprintf(stderr, "deletefile error: seek failed\n");
             closefs(fp); exit(1);
@@ -186,24 +170,20 @@ deletefile(char *fsfile, char *name)
             closefs(fp); exit(1);
         }
 
-        /* Mark this fnode as free: negative blockindex = free */
-        fnodes[cur].blockindex = -cur;
+        fnodes[cur].blockindex = -cur;  /* negative = free */
         fnodes[cur].nextblock  = -1;
 
         cur = next;
     }
     closefs(fp);
 
-    /* Clear the fentry (sets name[0]='\0' which marks it as a free slot) */
     memset(&files[slot], 0, sizeof(fentry));
     files[slot].firstblock = -1;
 
     save_metadata(fsfile, files, fnodes);
 }
 
-/* ═══════════════════════════════════════════════════════════
-   READFILE
-   ═══════════════════════════════════════════════════════════ */
+/* readfile: reads 'length' bytes from 'start' and prints to stdout */
 void
 readfile(char *fsfile, char *name, int start, int length)
 {
@@ -225,8 +205,8 @@ readfile(char *fsfile, char *name, int start, int length)
 
     FILE *fp = openfs(fsfile, "r");
 
-    /* Walk the chain to the block that contains byte 'start'.
-     * start / BLOCKSIZE tells us how many blocks to skip in the chain. */
+    /* skip to the block containing byte 'start'
+     * start/BLOCKSIZE = how many blocks to skip in the chain */
     int cur = files[slot].firstblock;
     int blocks_to_skip = start / BLOCKSIZE;
     for (int i = 0; i < blocks_to_skip; i++) {
@@ -237,11 +217,10 @@ readfile(char *fsfile, char *name, int start, int length)
     int file_pos   = start;
 
     while (bytes_left > 0 && cur != -1) {
-        int offset_in_block = file_pos % BLOCKSIZE;
+        int offset_in_block = file_pos % BLOCKSIZE;  /* where in this block we start */
         int space_in_block  = BLOCKSIZE - offset_in_block;
         int to_read         = (bytes_left < space_in_block) ? bytes_left : space_in_block;
 
-        /* Seek: block starts at cur*BLOCKSIZE, then add offset within the block */
         if (fseek(fp, (long)cur * BLOCKSIZE + offset_in_block, SEEK_SET) != 0) {
             fprintf(stderr, "readfile error: seek failed\n");
             closefs(fp); exit(1);
@@ -253,7 +232,7 @@ readfile(char *fsfile, char *name, int start, int length)
             closefs(fp); exit(1);
         }
 
-        fwrite(buf, 1, to_read, stdout);  /* print to terminal */
+        fwrite(buf, 1, to_read, stdout);
 
         file_pos  += to_read;
         bytes_left -= to_read;
@@ -263,9 +242,8 @@ readfile(char *fsfile, char *name, int start, int length)
     closefs(fp);
 }
 
-/* ═══════════════════════════════════════════════════════════
-   WRITEFILE  (atomic: all or nothing)
-   ═══════════════════════════════════════════════════════════ */
+/* writefile: writes 'length' bytes from stdin into file at 'start'
+ * atomic — checks everything first, writes nothing if it can't complete */
 void
 writefile(char *fsfile, char *name, int start, int length)
 {
@@ -279,15 +257,13 @@ writefile(char *fsfile, char *name, int start, int length)
         exit(1);
     }
 
-    /* No gaps: can only write from 0 up to current file size */
     if (start > files[slot].size) {
         fprintf(stderr, "writefile error: start=%d beyond file size=%d\n",
                 start, files[slot].size);
         exit(1);
     }
 
-    /* ATOMIC STEP 1: Read ALL data from stdin before touching the filesystem.
-     * If we can't get the data, we exit cleanly with nothing changed. */
+    /* read all stdin data first — before touching the filesystem */
     char *data = malloc(length);
     if (!data) {
         fprintf(stderr, "writefile error: malloc failed\n");
@@ -298,54 +274,49 @@ writefile(char *fsfile, char *name, int start, int length)
         free(data); exit(1);
     }
 
-    /* How many blocks do we need after this write?
-     * new_size = the file's size after this write completes.
-     * blocks_needed = ceiling(new_size / BLOCKSIZE)
-     * blocks_to_alloc = how many NEW blocks we need on top of what we have */
+    /* how many blocks do we need after this write?
+     * blocks_needed = ceil(new_size / BLOCKSIZE) */
     int new_size        = (start + length > files[slot].size) ? start + length : files[slot].size;
     int blocks_needed   = (new_size + BLOCKSIZE - 1) / BLOCKSIZE;
     int blocks_have     = count_file_blocks(fnodes, files[slot].firstblock);
     int blocks_to_alloc = blocks_needed - blocks_have;
 
-    /* ATOMIC STEP 2: Check we have enough free blocks BEFORE writing anything.
-     * If not, exit with error. Nothing in the filesystem has changed yet. */
+    /* atomic check — do we have enough free blocks? if not, exit now */
     if (blocks_to_alloc > 0 && count_free_fnodes(fnodes) < blocks_to_alloc) {
         fprintf(stderr, "writefile error: not enough free blocks\n");
         free(data); exit(1);
     }
 
-    /* Allocate new fnodes and attach them to the end of the chain.
-     * Find the current tail of the chain first. */
+    /* find the tail of the chain so we can attach new blocks to it */
     int last = -1;
     int cur  = files[slot].firstblock;
     while (cur != -1 && fnodes[cur].nextblock != -1) {
         cur = fnodes[cur].nextblock;
     }
-    last = cur;  /* -1 if the file has no blocks yet */
+    last = cur;
 
-    int new_fnode_indices[MAXBLOCKS];  /* track new ones so we can zero them */
+    int new_fnode_indices[MAXBLOCKS];
     int new_fnode_count = 0;
 
     for (int i = 0; i < blocks_to_alloc; i++) {
         int nf = find_free_fnode(fnodes);
 
-        fnodes[nf].blockindex = nf;   /* positive = in use */
-        fnodes[nf].nextblock  = -1;   /* end of chain */
+        fnodes[nf].blockindex = nf;
+        fnodes[nf].nextblock  = -1;
 
         if (last == -1)
-            files[slot].firstblock = nf;  /* first block this file has ever had */
+            files[slot].firstblock = nf;
         else
-            fnodes[last].nextblock = nf;  /* link to end of chain */
+            fnodes[last].nextblock = nf;
 
         last = nf;
         new_fnode_indices[new_fnode_count++] = nf;
     }
 
-    /* Open the real file for writing */
     FILE *fp = openfs(fsfile, "r+");
     char zerobuf[BLOCKSIZE] = {0};
 
-    /* Zero out every newly allocated block (spec requirement) */
+    /* zero out newly allocated blocks as required by spec */
     for (int i = 0; i < new_fnode_count; i++) {
         int idx = new_fnode_indices[i];
         if (fseek(fp, (long)idx * BLOCKSIZE, SEEK_SET) != 0) {
@@ -358,7 +329,7 @@ writefile(char *fsfile, char *name, int start, int length)
         }
     }
 
-    /* Walk to the block containing byte 'start', then write chunk by chunk */
+    /* same navigation as readfile — skip to block containing byte 'start' */
     cur = files[slot].firstblock;
     int blocks_to_skip = start / BLOCKSIZE;
     for (int i = 0; i < blocks_to_skip; i++) {
@@ -367,7 +338,7 @@ writefile(char *fsfile, char *name, int start, int length)
 
     int bytes_left = length;
     int file_pos   = start;
-    int data_off   = 0;   /* index into our data buffer */
+    int data_off   = 0;
 
     while (bytes_left > 0 && cur != -1) {
         int offset_in_block = file_pos % BLOCKSIZE;
@@ -391,7 +362,6 @@ writefile(char *fsfile, char *name, int start, int length)
 
     closefs(fp);
 
-    /* Update size if we extended the file */
     if (start + length > (int)files[slot].size)
         files[slot].size = start + length;
 
